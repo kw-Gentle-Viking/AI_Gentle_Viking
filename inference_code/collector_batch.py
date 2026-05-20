@@ -650,7 +650,8 @@ def main():
 
     save_daily_to_db(daily_rows)
 
-    # 1분봉 버퍼는 유지 (collector_realtime.py와 공유하므로 삭제하지 않음)
+    # 1분봉 버퍼 초기화 (5분봉 변환 완료 후 당일 데이터 삭제)
+    clear_1min_buffer()
 
     logger.info("===== 배치 수집 완료 =====")
 

@@ -66,7 +66,13 @@ def main():
         logger.info(f"주말({TODAY}) → 건너뜀")
         return
 
-    is_market_hours = MARKET_OPEN <= NOW <= MARKET_CLOSE
+    is_market_hours    = MARKET_OPEN <= NOW <= MARKET_CLOSE
+    post_market_cutoff = NOW.replace(hour=17, minute=30, second=0, microsecond=0)
+
+    # 장 마감 후에는 17:30까지만 추론 (이후 자정까지 반복 실행 방지)
+    if not is_market_hours and NOW > post_market_cutoff:
+        logger.info(f"장외 추론 종료 ({NOW.strftime('%H:%M')}) → 건너뜀")
+        return
 
     logger.info(f"===== 파이프라인 시작 ({NOW.strftime('%H:%M')}) "
                 f"{'장중' if is_market_hours else '장외'} =====")

@@ -176,18 +176,8 @@ def build_daily_tech() -> pd.DataFrame:
     """, (FROM_DATE,))
     rows = cur.fetchall()
 
-    # daily_valuation market_cap (shares_outstanding=0 대체용)
-    cur.execute("""
-        SELECT ticker, trade_date, market_cap
-        FROM daily_valuation
-        WHERE trade_date >= %s AND market_cap > 0
-        ORDER BY ticker, trade_date
-    """, (FROM_DATE,))
-    val_rows = cur.fetchall()
     cur.close()
     conn.close()
-    df_mktcap = pd.DataFrame(val_rows, columns=["ticker", "trade_date", "market_cap_val"])
-    df_mktcap["trade_date"] = pd.to_datetime(df_mktcap["trade_date"]).dt.date
 
     if not rows:
         logger.warning("price_daily 데이터 없음")
@@ -212,7 +202,6 @@ def build_daily_tech() -> pd.DataFrame:
         grp["disparity_20d"] = grp["close_price"] / grp["ma_20"]
         grp["disparity_60d"] = grp["close_price"] / grp["ma_60"]
 
-        grp["market_cap"]     = grp["close_price"] * grp["shares_outstanding"]
         grp["volatility_20d"] = grp["log_ret_1d"].rolling(20).std()
 
         today_row = grp[grp["trade_date"] == PREV_DATE]
@@ -567,7 +556,7 @@ def build_event_calendar_static() -> pd.DataFrame:
         "market_id", "sector_id", "listing_days",
         "is_dividend", "is_bonus_issue", "is_rights_offering",
         "is_split", "is_merger", "is_earnings",
-        "is_bok", "is_fomc", "is_witching_kr",
+        "is_bok", "is_fomc", "is_witching_kr", "is_witching_us",
         "day_of_week",
     ]]
 

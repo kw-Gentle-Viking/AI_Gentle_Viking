@@ -24,7 +24,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 import pandas as pd
 import numpy as np
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,8 +52,9 @@ MODEL_PATH = os.environ.get("TFT_MODEL_PATH", "/home/user/checkpoints/tft_best.c
 # 추론 대상 종목 (테스트 단계 하드코딩 / 추후 백엔드에서 수신)
 REALTIME_TICKERS = ["005930", "000660"]
 
-TODAY = date.today()
-NOW   = datetime.now()
+TODAY         = date.today()
+NOW           = datetime.now()
+LOOKBACK_DATE = TODAY - timedelta(days=5)  # 영업일 3일+ 확보 (encoder 60봉용)
 
 # 장외 피처 컬럼 (inference_features)
 INFERENCE_COLS = [
@@ -140,13 +141,13 @@ def load_features() -> pd.DataFrame:
 
     df_inf = pd.DataFrame(inf_rows, columns=["ticker", "trade_date"] + INFERENCE_COLS)
 
-    # 5분봉 피처 (오늘 전체, encoder_length=60봉 필요)
+    # 5분봉 피처 (encoder 60봉 확보를 위해 최근 5일치 포함)
     cur.execute(f"""
         SELECT ticker, trade_datetime, trade_date, {', '.join(REALTIME_COLS)}
         FROM realtime_features
-        WHERE trade_date = %s AND ticker IN ({placeholders})
+        WHERE trade_date >= %s AND ticker IN ({placeholders})
         ORDER BY ticker, trade_datetime
-    """, [TODAY] + REALTIME_TICKERS)
+    """, [LOOKBACK_DATE] + REALTIME_TICKERS)
     rt_rows = cur.fetchall()
 
     cur.close()
@@ -194,7 +195,7 @@ def run_inference(df: pd.DataFrame) -> pd.DataFrame:
         ]
         UNKNOWN_PAST_COLS = [c for c in REALTIME_COLS + INFERENCE_COLS
                              if c not in KNOWN_FUTURE_COLS
-                             and c not in ("sector_id", "market_id", "day_of_week")]
+                             and c not in ("sector_id", "market_id")]
         STATIC_COLS = ["sector_id", "market_id"]
 
         # NaN → 0 (numpy NaN, inf 포함)
@@ -216,10 +217,9 @@ def run_inference(df: pd.DataFrame) -> pd.DataFrame:
         df["sector_id"] = df["sector_id"].fillna(-1).astype(int).astype(str)
         df["market_id"] = df["market_id"].fillna(0).astype(int).astype(str)
 
-        # time_idx 생성
+        # time_idx 생성 (유효 종목 필터링 전 초기 정렬용)
         df = df.sort_values(["ticker", "trade_datetime"]).reset_index(drop=True)
         df["time_idx"] = df.groupby("ticker").cumcount()
-        df["label"]    = 1  # 더미 라벨
 
         # 유효 종목만 (encoder_length 이상)
         valid = df.groupby("ticker")["time_idx"].count()
@@ -229,6 +229,16 @@ def run_inference(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             logger.warning("encoder_length 미달 종목만 있음")
             return pd.DataFrame()
+
+        # 종목별 마지막 61봉만 사용 (encoder 60 + decoder 1)
+        # → 종목당 정확히 1개의 예측 샘플이 생성되어 결과 매핑이 안정적
+        df = (
+            df.groupby("ticker", group_keys=False)
+            .apply(lambda x: x.tail(ENCODER_LENGTH + 1))
+            .reset_index(drop=True)
+        )
+        df["time_idx"] = df.groupby("ticker").cumcount()
+        df["label"]    = 1
 
         dataset = TimeSeriesDataSet(
             df,
@@ -268,15 +278,18 @@ def run_inference(df: pd.DataFrame) -> pd.DataFrame:
                         "prob_sell":  float(prob[2]),
                     })
 
-        # 마지막 봉 기준으로 결과 매핑
-        last_rows = df.groupby("ticker").last().reset_index()[["ticker", "trade_datetime"]]
+        # 결과 매핑: tail(61) 필터 덕분에 종목당 샘플 1개, 정렬 순서 보장
+        # df가 ticker 알파벳 오름차순으로 정렬되어 있고 DataLoader(shuffle=False)도 동일 순서
+        ticker_order = df.groupby("ticker")["trade_datetime"].max().reset_index()
+        ticker_order = ticker_order.sort_values("ticker").reset_index(drop=True)
+
         df_results = pd.DataFrame(results)
-        if len(df_results) != len(last_rows):
-            logger.warning(f"결과 수 불일치: {len(df_results)} vs {len(last_rows)}")
+        if len(df_results) != len(ticker_order):
+            logger.warning(f"결과 수 불일치: {len(df_results)} vs {len(ticker_order)}")
             return pd.DataFrame()
 
-        df_results["ticker"]         = last_rows["ticker"].values
-        df_results["trade_datetime"] = last_rows["trade_datetime"].values
+        df_results["ticker"]         = ticker_order["ticker"].values
+        df_results["trade_datetime"] = ticker_order["trade_datetime"].values
         df_results["trade_date"]     = TODAY
         df_results["pred_str"]       = df_results["pred_label"].map(LABEL_MAP)
         df_results["model_version"]  = os.path.basename(MODEL_PATH)
