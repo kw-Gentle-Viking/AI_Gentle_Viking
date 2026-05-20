@@ -1,6 +1,6 @@
 """
-load_5min_data.py
-======================
+init_5min_data.py
+=================
 대신증권 CYBOS Plus로 수집한 5분봉 CSV → PostgreSQL 적재
 
 CSV 컬럼: ticker, trade_date, trade_time, open_price, high_price,

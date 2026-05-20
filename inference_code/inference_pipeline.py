@@ -1,6 +1,6 @@
 """
-run_pipeline.py
-===============
+inference_pipeline.py
+=====================
 5분봉 피처 생성 + 추론 파이프라인 (5분마다 crontab)
 - build_realtime_features → inference 순서 보장
 
@@ -9,7 +9,7 @@ run_pipeline.py
 - inference: 최신 realtime_features (15:30 기준) 로 추론
 
 crontab:
-    */5 * * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/run_pipeline.py >> /home/user/pipeline.log 2>&1
+    */5 * * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/inference_pipeline.py >> /home/user/pipeline.log 2>&1
 """
 
 import os

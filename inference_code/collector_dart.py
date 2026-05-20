@@ -9,7 +9,7 @@ OpenDartReader를 이용한 종목 이벤트 수집
     배당, 무상증자, 유상증자, 액면분할, 합병, 실적발표
 
 crontab 설정:
-    00 08 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/collector_dart.py >> /home/user/dart.log 2>&1
+    00 8 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/collector_dart.py >> /home/user/collector_dart.log 2>&1
 
 패키지 설치:
     pip install opendartreader psycopg2-binary pandas

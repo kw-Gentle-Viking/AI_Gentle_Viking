@@ -1,6 +1,6 @@
 """
-collector_global.py
-===================
+collector_yf_fred.py
+====================
 글로벌 시장 데이터 매일 자동 수집 (Yahoo Finance + FRED)
 - 최근 7일치 수집 후 DB upsert
 - 매일 오전 8시 crontab 실행

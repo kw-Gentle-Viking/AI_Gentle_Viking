@@ -2,7 +2,7 @@
 collector_batch.py
 ==================
 장 마감 후 배치 수집 (연중 매일 평일)
-- 매일 16:40 crontab으로 실행
+- 매일 16:00 crontab으로 실행
 - 350종목 1분봉/5분봉 수집 → PostgreSQL 저장
 - 25개 섹터 일봉 OHLCV 수집 → PostgreSQL 저장
 - 실시간 수집 종목은 ON CONFLICT DO NOTHING으로 자동 스킵
@@ -10,7 +10,7 @@ collector_batch.py
 ※ 실전계좌 API 키 사용 (분봉 조회는 실전계좌만 가능)
 
 crontab 설정:
-40 16 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/collector_batch.py >> /home/user/batch.log 2>&1
+00 16 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/collector_batch.py >> /home/user/batch.log 2>&1
 
 패키지 설치:
 pip install requests pandas psycopg2-binary openpyxl

@@ -1,6 +1,6 @@
 """
-init_calendar_events.py
-=======================
+init_calendar.py
+================
 캘린더 및 시장 이벤트 초기 적재 (1회 실행)
 - calendar: 공휴일, 개장일, 공매도금지 여부
 - market_events: BOK, FOMC, 선물옵션만기일

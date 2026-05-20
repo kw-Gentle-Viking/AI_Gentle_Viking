@@ -13,8 +13,9 @@ intraday_5min 테이블에서 당일 데이터 읽어서 피처 계산
 출력:
     realtime_features 테이블 (5분마다 upsert)
 
-crontab:
-    */5 09-15 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_realtime_features.py >> /home/user/realtime_features.log 2>&1
+실행 방식:
+    run_pipeline.py 에서 장중(09:00~15:30)에 subprocess로 호출됨
+    crontab에 직접 등록되지 않음
 """
 
 import os

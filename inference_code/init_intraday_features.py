@@ -1,8 +1,8 @@
 """
-build_inference_features.py
-===========================
-추론용 장외 피처 생성 (매일 장 마감 후 실행)
-학습용 build_all_features.py와 동일한 로직 적용
+init_intraday_features.py
+=========================
+추론용 장외 피처 초기 적재 (1회 실행)
+build_intraday_features.py와 동일한 로직 적용
 
 추론용 서버 테이블:
     price_daily          → 일봉 기술적 피처
@@ -18,9 +18,6 @@ build_inference_features.py
 
 출력:
     inference_features 테이블 (당일 피처)
-
-crontab:
-    00 17 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_inference_features.py >> /home/user/inference_features.log 2>&1
 """
 
 import os

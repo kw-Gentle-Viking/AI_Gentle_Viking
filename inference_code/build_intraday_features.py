@@ -1,6 +1,6 @@
 """
-build_inference_features.py
-===========================
+build_intraday_features.py
+==========================
 추론용 장외 피처 생성 (매일 장 마감 후 실행)
 
 추론용 서버 테이블:
@@ -19,7 +19,7 @@ build_inference_features.py
     inference_features 테이블 (당일 피처)
 
 crontab:
-    00 17 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_inference_features.py >> /home/user/inference_features.log 2>&1
+    30 16 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_intraday_features.py >> /home/user/build_intraday_features.log 2>&1
 """
 
 import os

@@ -13,8 +13,9 @@ TFT 모델 실시간 추론 (5분마다 실행)
 추론 대상 종목 (테스트 단계 하드코딩 / 추후 백엔드에서 수신):
     REALTIME_TICKERS = ["005930", "000660"]
 
-crontab:
-    */5 09-15 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/inference.py >> /home/user/inference.log 2>&1
+실행 방식:
+    inference_pipeline.py 에서 subprocess로 호출됨
+    crontab에 직접 등록되지 않음
 """
 
 import os

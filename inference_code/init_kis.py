@@ -1,8 +1,7 @@
 """
-collector_daily_kis.py
-======================
-한국투자증권 API 매일 자동 수집 (장 마감 후)
-- 매일 16:50 crontab 실행
+init_kis.py
+===========
+한국투자증권 API 초기 적재 (1회 실행)
 
 수집 항목:
     - 수급 (개인/외국인/기관 순매수)
@@ -13,9 +12,6 @@ collector_daily_kis.py
     - lstn_stcn (상장주식수) 추가 수집 → price_daily 업데이트
     - NaN → None 변환 강화
     - market_cap ffill 로직 추가
-
-crontab:
-    50 16 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/collector_daily_kis.py >> /home/user/daily_kis.log 2>&1
 """
 
 import os

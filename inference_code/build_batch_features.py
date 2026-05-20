@@ -1,12 +1,12 @@
 """
-build_batch_realtime.py
+build_batch_features.py
 =======================
 장 마감 후 전체 종목 5분봉 피처 배치 생성 (하루 1회)
 - 오늘 intraday_5min 데이터 기반으로 realtime_features 생성
 - REALTIME_TICKERS 포함 전체 종목 대상
 
 crontab:
-    10 17 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_batch_realtime.py >> /home/user/batch_realtime.log 2>&1
+    30 16 * * 1-5 /home/user/miniconda3/envs/kis_collector/bin/python /home/user/build_batch_features.py >> /home/user/build_batch_features.log 2>&1
 """
 
 import os
