@@ -57,7 +57,7 @@ NOW   = datetime.now()
 # 장외 피처 컬럼 (inference_features)
 INFERENCE_COLS = [
     "log_ret_1d", "disparity_5d", "disparity_20d", "disparity_60d",
-    "turnover_ratio", "volatility_20d",
+    "volatility_20d",
     "prop_individual", "prop_foreign", "prop_institution",
     "per", "pbr", "per_chg_1d", "pbr_chg_1d",
     "kospi_ret", "kosdaq_ret", "snp500_ret", "nasdaq_ret", "phlx_semi_ret",
@@ -67,7 +67,7 @@ INFERENCE_COLS = [
     "sector_ma_ratio_20d", "sector_volatility", "sector_volume_ratio",
     "is_dividend", "is_bonus_issue", "is_rights_offering",
     "is_split", "is_merger", "is_earnings",
-    "is_short_selling_banned", "is_bok", "is_fomc",
+    "is_bok", "is_fomc",
     "is_witching_kr", "is_witching_us",
     "sector_id", "market_id", "day_of_week", "listing_days",
 ]
@@ -188,7 +188,7 @@ def run_inference(df: pd.DataFrame) -> pd.DataFrame:
         ENCODER_LENGTH = 60
         KNOWN_FUTURE_COLS = [
             "time_progress",
-            "is_short_selling_banned", "is_bok", "is_fomc",
+            "is_bok", "is_fomc",
             "is_witching_kr", "is_witching_us",
         ]
         UNKNOWN_PAST_COLS = [c for c in REALTIME_COLS + INFERENCE_COLS

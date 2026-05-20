@@ -76,7 +76,6 @@ NUMERIC_COLS = {
     "disparity_5d":         (0.01, False, False),
     "disparity_20d":        (0.01, False, False),
     "disparity_60d":        (0.01, False, False),
-    "turnover_ratio":       (0.50, False, False),  # market_cap 5/17 이후만 있음
     "volatility_20d":       (0.01, False, False),
     "prop_individual":      (0.10, False, False),
     "prop_foreign":         (0.10, False, False),
@@ -112,7 +111,6 @@ RANGE_CHECKS = {
     "disparity_5d":     (0.5, 2.0),
     "disparity_20d":    (0.5, 2.0),
     "disparity_60d":    (0.3, 3.0),
-    "turnover_ratio":   (0.0, 5.0),  # 클리핑 전 이상치 가능
     "volatility_20d":   (0.0, 0.5),
     "prop_individual":  (-1.0, 1.0),  # 클리핑 전 이상치 가능
     "prop_foreign":     (-1.0, 1.0),  # 클리핑 전 이상치 가능
@@ -145,11 +143,7 @@ for col, (max_null_ratio, allow_nan, check_zero) in NUMERIC_COLS.items():
         issues.append(f"전부 0 (market_cap 없는 날짜는 정상)")
 
     if issues:
-        # turnover_ratio 전부 0은 경고로만
-        if "전부 0" in str(issues) and col == "turnover_ratio":
-            warn(f"{col}: {', '.join(issues)}")
-        else:
-            err(f"{col}: {', '.join(issues)}")
+        err(f"{col}: {', '.join(issues)}")
     elif null_cnt > 0 or nan_cnt > 0:
         ok(f"{col}: NULL {null_cnt}개 / NaN {nan_cnt}개 (허용 범위)")
     else:
@@ -182,25 +176,21 @@ print(f"\n  [날짜별 종목수 체크]")
 cur.execute("""
     SELECT trade_date, COUNT(*) AS cnt,
            COUNT(sector_ret_1d) AS has_sector,
-           COUNT(prop_individual) AS has_flow,
-           COUNT(turnover_ratio) FILTER (WHERE turnover_ratio IS NOT NULL
-               AND turnover_ratio::text != 'NaN') AS has_turnover
+           COUNT(prop_individual) AS has_flow
     FROM inference_features
     GROUP BY trade_date
     ORDER BY trade_date DESC
     LIMIT 10
 """)
 rows = cur.fetchall()
-print(f"  {'날짜':<12} {'종목':>5} {'섹터':>5} {'수급':>5} {'회전율':>6}")
+print(f"  {'날짜':<12} {'종목':>5} {'섹터':>5} {'수급':>5}")
 for r in rows:
-    line = f"  {str(r[0]):<12} {r[1]:>5} {r[2]:>5} {r[3]:>5} {r[4]:>6}"
+    line = f"  {str(r[0]):<12} {r[1]:>5} {r[2]:>5} {r[3]:>5}"
     print(line)
     if r[1] != EXPECTED:
         warn(f"inference_features {r[0]}: 종목수 {r[1]} (예상 {EXPECTED})")
     if r[2] == 0:
         err(f"inference_features {r[0]}: 섹터 피처 전부 없음 (조인 실패)")
-    if r[4] == 0:
-        warn(f"inference_features {r[0]}: turnover_ratio 전부 없음 (market_cap 없는 날 정상)")
 
 # ============================================================
 print("\n" + "="*60)

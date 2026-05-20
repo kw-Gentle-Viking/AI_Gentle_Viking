@@ -2,14 +2,13 @@
 build_inference_features.py
 ===========================
 추론용 장외 피처 생성 (매일 장 마감 후 실행)
-학습용 build_all_features.py와 동일한 로직 적용
 
 추론용 서버 테이블:
     price_daily          → 일봉 기술적 피처
     investor_flow_daily  → 수급 피처
     daily_valuation      → PER/PBR
     market_global        → 글로벌 매크로
-    market_index_daily   → KOSPI/KOSDAQ/VKOSPI
+    market_index_daily   → KOSPI/KOSDAQ
     sector_daily_ohlcv   → 섹터 피처
     stock_events         → 종목 이벤트
     calendar             → 캘린더
@@ -41,9 +40,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# 설정값
-# ============================================================
 DB_CONFIG = {
     "host":     os.environ.get("DB_HOST", "localhost"),
     "port":     os.environ.get("DB_PORT", 5432),
@@ -53,8 +49,30 @@ DB_CONFIG = {
 }
 
 TODAY    = date.today()
-LOOKBACK = 300  # 달력 기준일수 (영업일 250개 확보용)
+LOOKBACK = 300
 FROM_DATE = TODAY - timedelta(days=LOOKBACK)
+
+SECTOR_ID_TO_CODE = {
+    0:  "0005", 1:  "0006", 2:  "0007", 3:  "0008",
+    4:  "0009", 5:  "0010", 6:  "0011", 7:  "0012",
+    8:  "0013", 9:  "0014", 10: "0015", 11: "0016",
+    12: "0017", 13: "0018", 14: "0019", 15: "0020",
+    16: "0021", 17: "0024", 18: "0025", 19: "0026",
+}
+
+
+def get_prev_trade_date() -> date:
+    """price_daily에서 오늘 이전 최신 거래일 조회 (데이터 누수 방지)"""
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT MAX(trade_date) FROM price_daily
+        WHERE trade_date < %s
+    """, (TODAY,))
+    result = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return result if result else TODAY - timedelta(days=1)
 
 
 def get_conn():
@@ -73,19 +91,6 @@ def nan_to_none(val):
     return val
 
 
-# sector_id → sector_code 매핑
-SECTOR_ID_TO_CODE = {
-    0:  "0005", 1:  "0006", 2:  "0007", 3:  "0008",
-    4:  "0009", 5:  "0010", 6:  "0011", 7:  "0012",
-    8:  "0013", 9:  "0014", 10: "0015", 11: "0016",
-    12: "0017", 13: "0018", 14: "0019", 15: "0020",
-    16: "0021", 17: "0024", 18: "0025", 19: "0026",
-}
-
-
-# ============================================================
-# 1. 테이블 초기화
-# ============================================================
 def init_table():
     conn = get_conn()
     cur  = conn.cursor()
@@ -93,27 +98,18 @@ def init_table():
         CREATE TABLE IF NOT EXISTS inference_features (
             ticker                  VARCHAR(10)  NOT NULL,
             trade_date              DATE         NOT NULL,
-
-            -- 일봉 기술적 (6개)
             log_ret_1d              DOUBLE PRECISION,
             disparity_5d            DOUBLE PRECISION,
             disparity_20d           DOUBLE PRECISION,
             disparity_60d           DOUBLE PRECISION,
-            turnover_ratio          DOUBLE PRECISION,
             volatility_20d          DOUBLE PRECISION,
-
-            -- 수급 (3개)
             prop_individual         DOUBLE PRECISION,
             prop_foreign            DOUBLE PRECISION,
             prop_institution        DOUBLE PRECISION,
-
-            -- 기업가치 (4개)
             per                     DOUBLE PRECISION,
             pbr                     DOUBLE PRECISION,
             per_chg_1d              DOUBLE PRECISION,
             pbr_chg_1d              DOUBLE PRECISION,
-
-            -- 시장 매크로 (12개)
             kospi_ret               DOUBLE PRECISION,
             kosdaq_ret              DOUBLE PRECISION,
             snp500_ret              DOUBLE PRECISION,
@@ -125,38 +121,26 @@ def init_table():
             rate_spread_us_kr       DOUBLE PRECISION,
             wti_ret                 DOUBLE PRECISION,
             gold_ret                DOUBLE PRECISION,
-
-            -- 섹터 (6개)
             sector_ret_1d           DOUBLE PRECISION,
             sector_ret_5d           DOUBLE PRECISION,
             sector_ret_20d          DOUBLE PRECISION,
             sector_ma_ratio_20d     DOUBLE PRECISION,
             sector_volatility       DOUBLE PRECISION,
             sector_volume_ratio     DOUBLE PRECISION,
-
-            -- 종목 이벤트 (6개)
             is_dividend             INT DEFAULT 0,
             is_bonus_issue          INT DEFAULT 0,
             is_rights_offering      INT DEFAULT 0,
             is_split                INT DEFAULT 0,
             is_merger               INT DEFAULT 0,
             is_earnings             INT DEFAULT 0,
-
-            -- Known Future (4개)
-            is_short_selling_banned INT DEFAULT 0,
             is_bok                  INT DEFAULT 0,
             is_fomc                 INT DEFAULT 0,
             is_witching_kr          INT DEFAULT 0,
             is_witching_us          INT DEFAULT 0,
-
-            -- Static (2개)
             sector_id               INT,
             market_id               INT,
-
-            -- 기타 (2개)
             day_of_week             INT,
             listing_days            INT,
-
             PRIMARY KEY (ticker, trade_date)
         );
     """)
@@ -166,70 +150,44 @@ def init_table():
     logger.info("테이블 초기화 완료")
 
 
-# ============================================================
-# 2. 일봉 기술적 피처
-# ============================================================
 def build_daily_tech() -> pd.DataFrame:
     logger.info("[1/7] 일봉 기술적 피처 계산 중...")
     conn = get_conn()
     cur  = conn.cursor()
     cur.execute("""
-        SELECT ticker, trade_date, close_price, turnover, shares_outstanding
+        SELECT ticker, trade_date, close_price
         FROM price_daily
         WHERE trade_date >= %s
         ORDER BY ticker, trade_date
     """, (FROM_DATE,))
     rows = cur.fetchall()
-
-    # daily_valuation market_cap (shares_outstanding=0 대체용)
-    cur.execute("""
-        SELECT ticker, trade_date, market_cap
-        FROM daily_valuation
-        WHERE trade_date >= %s AND market_cap > 0
-        ORDER BY ticker, trade_date
-    """, (FROM_DATE,))
-    val_rows = cur.fetchall()
     cur.close()
     conn.close()
-    df_mktcap = pd.DataFrame(val_rows, columns=["ticker", "trade_date", "market_cap_val"])
-    df_mktcap["trade_date"] = pd.to_datetime(df_mktcap["trade_date"]).dt.date
 
     if not rows:
         logger.warning("price_daily 데이터 없음")
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows, columns=[
-        "ticker", "trade_date", "close_price", "turnover", "shares_outstanding"
-    ])
+    df = pd.DataFrame(rows, columns=["ticker", "trade_date", "close_price"])
 
     results = []
     for ticker, grp in df.groupby("ticker"):
         grp = grp.sort_values("trade_date").reset_index(drop=True)
-
-        # ffill
-        grp["close_price"]        = grp["close_price"].ffill()
-        grp["turnover"]           = grp["turnover"].ffill()
-        grp["shares_outstanding"] = grp["shares_outstanding"].ffill()
+        grp["close_price"] = grp["close_price"].ffill()
 
         grp["log_ret_1d"]    = np.log(grp["close_price"] / grp["close_price"].shift(1))
-        grp["ma_5"]          = grp["close_price"].rolling(5).mean()
-        grp["ma_20"]         = grp["close_price"].rolling(20).mean()
-        grp["ma_60"]         = grp["close_price"].rolling(60).mean()
-        grp["disparity_5d"]  = grp["close_price"] / grp["ma_5"]
-        grp["disparity_20d"] = grp["close_price"] / grp["ma_20"]
-        grp["disparity_60d"] = grp["close_price"] / grp["ma_60"]
-
-        grp["market_cap"]     = grp["close_price"] * grp["shares_outstanding"]
-        grp["turnover_ratio"] = grp["turnover"] / grp["market_cap"].replace(0, np.nan)
+        grp["disparity_5d"]  = grp["close_price"] / grp["close_price"].rolling(5).mean()
+        grp["disparity_20d"] = grp["close_price"] / grp["close_price"].rolling(20).mean()
+        grp["disparity_60d"] = grp["close_price"] / grp["close_price"].rolling(60).mean()
         grp["volatility_20d"] = grp["log_ret_1d"].rolling(20).std()
 
-        today_row = grp[grp["trade_date"] == TODAY]
+        today_row = grp[grp["trade_date"] == PREV_DATE]
         if today_row.empty:
             continue
         results.append(today_row[[
             "ticker", "trade_date",
             "log_ret_1d", "disparity_5d", "disparity_20d", "disparity_60d",
-            "turnover_ratio", "volatility_20d"
+            "volatility_20d"
         ]])
 
     if not results:
@@ -239,9 +197,6 @@ def build_daily_tech() -> pd.DataFrame:
     return result_df
 
 
-# ============================================================
-# 3. 수급 피처
-# ============================================================
 def build_investor() -> pd.DataFrame:
     logger.info("[2/7] 수급 피처 계산 중...")
     conn = get_conn()
@@ -251,13 +206,12 @@ def build_investor() -> pd.DataFrame:
                individual_net_amt, foreign_net_amt, inst_net_amt, market_cap
         FROM investor_flow_daily
         WHERE trade_date = %s
-    """, (TODAY,))
+    """, (PREV_DATE,))
     rows = cur.fetchall()
 
-    # daily_valuation에서 market_cap 가져오기 (investor_flow_daily에 없을 때 대체용)
     cur.execute("""
         SELECT ticker, market_cap FROM daily_valuation WHERE trade_date = %s
-    """, (TODAY,))
+    """, (PREV_DATE,))
     val_rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -271,7 +225,6 @@ def build_investor() -> pd.DataFrame:
         "individual_net_amt", "foreign_net_amt", "inst_net_amt", "market_cap"
     ])
 
-    # market_cap 대체
     df_val_mktcap = pd.DataFrame(val_rows, columns=["ticker", "market_cap_val"])
     df = df.merge(df_val_mktcap, on="ticker", how="left")
     df["market_cap_final"] = df["market_cap"].replace(0, np.nan).fillna(df["market_cap_val"])
@@ -284,9 +237,6 @@ def build_investor() -> pd.DataFrame:
     return df[["ticker", "trade_date", "prop_individual", "prop_foreign", "prop_institution"]]
 
 
-# ============================================================
-# 4. 기업가치 피처
-# ============================================================
 def build_valuation() -> pd.DataFrame:
     logger.info("[3/7] 기업가치 피처 계산 중...")
     conn = get_conn()
@@ -312,15 +262,12 @@ def build_valuation() -> pd.DataFrame:
     results = []
     for ticker, grp in df.groupby("ticker"):
         grp = grp.sort_values("trade_date").reset_index(drop=True)
-
-        # ffill
         grp["per"] = grp["per"].ffill()
         grp["pbr"] = grp["pbr"].ffill()
-
         grp["per_chg_1d"] = grp["per"].pct_change(fill_method=None)
         grp["pbr_chg_1d"] = grp["pbr"].pct_change(fill_method=None)
 
-        today_row = grp[grp["trade_date"] == TODAY]
+        today_row = grp[grp["trade_date"] == PREV_DATE]
         if today_row.empty:
             continue
         results.append(today_row[[
@@ -335,14 +282,10 @@ def build_valuation() -> pd.DataFrame:
     return result_df
 
 
-# ============================================================
-# 5. 시장 매크로 피처
-# ============================================================
 def build_market_macro() -> pd.DataFrame:
     logger.info("[4/7] 시장 매크로 피처 계산 중...")
     conn = get_conn()
     cur  = conn.cursor()
-
     cur.execute("""
         SELECT trade_date,
                snp500_close, nasdaq_close, phlx_semi_close,
@@ -365,13 +308,6 @@ def build_market_macro() -> pd.DataFrame:
         WHERE index_code = '1001' AND trade_date >= %s ORDER BY trade_date
     """, (TODAY - timedelta(days=10),))
     kosdaq_rows = cur.fetchall()
-
-    cur.execute("""
-        SELECT trade_date, close_price FROM market_index_daily
-        WHERE index_code = '101V1' AND trade_date >= %s ORDER BY trade_date
-    """, (TODAY - timedelta(days=10),))
-    vkospi_rows = cur.fetchall()
-
     cur.close()
     conn.close()
 
@@ -386,25 +322,19 @@ def build_market_macro() -> pd.DataFrame:
         "wti_crude_oil", "gold_price", "fed_rate", "kr_base_rate"
     ])
 
-    for rows, col in [(kospi_rows, "kospi_close"), (kosdaq_rows, "kosdaq_close"), (vkospi_rows, "vkospi")]:
+    for rows, col in [(kospi_rows, "kospi_close"), (kosdaq_rows, "kosdaq_close")]:
         if rows:
             tmp = pd.DataFrame(rows, columns=["trade_date", col])
             df  = df.merge(tmp, on="trade_date", how="left")
 
     df = df.sort_values("trade_date").reset_index(drop=True)
 
-    # ffill: FRED/Yahoo 주말·공휴일 결측치 채우기
-    fill_cols = [
-        "snp500_close", "nasdaq_close", "phlx_semi_close",
-        "vix", "usd_krw", "us_10y_yield",
-        "wti_crude_oil", "gold_price", "fed_rate", "kr_base_rate",
-        "kospi_close", "kosdaq_close", "vkospi"
-    ]
-    for col in fill_cols:
+    for col in ["snp500_close","nasdaq_close","phlx_semi_close","vix","usd_krw",
+                "us_10y_yield","wti_crude_oil","gold_price","fed_rate","kr_base_rate",
+                "kospi_close","kosdaq_close"]:
         if col in df.columns:
             df[col] = df[col].ffill()
 
-    # 학습 때와 동일한 계산 로직
     df["kospi_ret"]         = df["kospi_close"].pct_change()
     df["kosdaq_ret"]        = df["kosdaq_close"].pct_change()
     df["snp500_ret"]        = df["snp500_close"].pct_change()
@@ -417,7 +347,7 @@ def build_market_macro() -> pd.DataFrame:
     df["wti_ret"]           = df["wti_crude_oil"].pct_change()
     df["gold_ret"]          = df["gold_price"].pct_change()
 
-    today_row = df[df["trade_date"] == TODAY]
+    today_row = df[df["trade_date"] == TODAY]  # 글로벌은 TODAY 기준
     if today_row.empty:
         logger.warning(f"오늘({TODAY}) market_global 데이터 없음")
         return pd.DataFrame()
@@ -435,9 +365,6 @@ def build_market_macro() -> pd.DataFrame:
     return pd.DataFrame([result])
 
 
-# ============================================================
-# 6. 섹터 피처
-# ============================================================
 def build_sector() -> pd.DataFrame:
     logger.info("[5/7] 섹터 피처 계산 중...")
     conn = get_conn()
@@ -464,25 +391,18 @@ def build_sector() -> pd.DataFrame:
     results = []
     for sector_code, grp in df.groupby("sector_code"):
         grp = grp.sort_values("trade_date").reset_index(drop=True)
-
-        # ffill
-        for col in ["open", "high", "low", "close", "volume"]:
+        for col in ["open","high","low","close","volume"]:
             grp[col] = grp[col].ffill()
 
-        # 학습 때와 동일한 로직
-        grp["sector_ret_1d"]  = grp["close"].pct_change(1)
-        grp["sector_ret_5d"]  = grp["close"].pct_change(5)
-        grp["sector_ret_20d"] = grp["close"].pct_change(20)
-
-        grp["ma_20"] = grp["close"].rolling(20).mean()
-        grp["sector_ma_ratio_20d"] = grp["close"] / grp["ma_20"]
-
-        grp["sector_volatility"] = (grp["high"] - grp["low"]) / grp["close"]
-
-        grp["tv_ma_20"] = grp["volume"].rolling(20).mean()
+        grp["sector_ret_1d"]       = grp["close"].pct_change(1)
+        grp["sector_ret_5d"]       = grp["close"].pct_change(5)
+        grp["sector_ret_20d"]      = grp["close"].pct_change(20)
+        grp["sector_ma_ratio_20d"] = grp["close"] / grp["close"].rolling(20).mean()
+        grp["sector_volatility"]   = (grp["high"] - grp["low"]) / grp["close"]
+        grp["tv_ma_20"]            = grp["volume"].rolling(20).mean()
         grp["sector_volume_ratio"] = grp["volume"] / grp["tv_ma_20"]
 
-        today_row = grp[grp["trade_date"] == TODAY]
+        today_row = grp[grp["trade_date"] == PREV_DATE]
         if today_row.empty:
             continue
         today_row = today_row.copy()
@@ -500,34 +420,27 @@ def build_sector() -> pd.DataFrame:
     return result_df
 
 
-# ============================================================
-# 7. 이벤트/캘린더/Static 피처
-# ============================================================
 def build_event_calendar_static() -> pd.DataFrame:
     logger.info("[6/7] 이벤트/캘린더/Static 피처 수집 중...")
     conn = get_conn()
     cur  = conn.cursor()
 
-    # 종목 메타데이터
     cur.execute("""
-        SELECT ticker, is_kospi, is_kosdaq, market_id, sector_id, listing_date
+        SELECT ticker, market_id, sector_id, listing_date
         FROM ticker_metadata
     """)
     ticker_rows = cur.fetchall()
 
-    # 종목 이벤트 (오늘)
     cur.execute("""
         SELECT ticker, event_type FROM stock_events WHERE event_date = %s
     """, (TODAY,))
     event_rows = cur.fetchall()
 
-    # 캘린더 (오늘)
     cur.execute("""
-        SELECT day_of_week, is_short_selling_banned FROM calendar WHERE base_date = %s
+        SELECT day_of_week FROM calendar WHERE base_date = %s
     """, (TODAY,))
     cal_row = cur.fetchone()
 
-    # 시장 이벤트 (오늘)
     cur.execute("""
         SELECT event_type FROM market_events WHERE event_date = %s
     """, (TODAY,))
@@ -541,16 +454,14 @@ def build_event_calendar_static() -> pd.DataFrame:
         return pd.DataFrame()
 
     df = pd.DataFrame(ticker_rows, columns=[
-        "ticker", "is_kospi", "is_kosdaq", "market_id", "sector_id", "listing_date"
+        "ticker", "market_id", "sector_id", "listing_date"
     ])
 
-    # listing_days 계산
     df["listing_date"] = pd.to_datetime(df["listing_date"]).dt.date
     df["listing_days"] = df["listing_date"].apply(
         lambda d: (TODAY - d).days if pd.notna(d) else None
     )
 
-    # 이벤트 매핑
     event_map = {}
     for ticker, event_type in event_rows:
         event_map.setdefault(ticker, set()).add(event_type)
@@ -565,11 +476,8 @@ def build_event_calendar_static() -> pd.DataFrame:
     df["is_merger"]          = df["ticker"].apply(lambda t: get_event(t, "합병"))
     df["is_earnings"]        = df["ticker"].apply(lambda t: get_event(t, "실적발표"))
 
-    # 캘린더
-    df["day_of_week"]             = cal_row[0] if cal_row else TODAY.weekday()
-    df["is_short_selling_banned"] = int(cal_row[1]) if cal_row else 0
+    df["day_of_week"] = cal_row[0] if cal_row else TODAY.weekday()
 
-    # 시장 이벤트
     df["is_bok"]         = 1 if "BOK" in mkt_events else 0
     df["is_fomc"]        = 1 if "FOMC" in mkt_events else 0
     df["is_witching_kr"] = 1 if "WITCHING_KR" in mkt_events else 0
@@ -582,14 +490,11 @@ def build_event_calendar_static() -> pd.DataFrame:
         "market_id", "sector_id", "listing_days",
         "is_dividend", "is_bonus_issue", "is_rights_offering",
         "is_split", "is_merger", "is_earnings",
-        "is_short_selling_banned", "is_bok", "is_fomc", "is_witching_kr",
+        "is_bok", "is_fomc", "is_witching_kr", "is_witching_us",
         "day_of_week",
     ]]
 
 
-# ============================================================
-# 8. 전체 조인 후 DB 저장
-# ============================================================
 def save_features(df: pd.DataFrame):
     if df.empty:
         logger.warning("저장할 데이터 없음")
@@ -610,7 +515,7 @@ def save_features(df: pd.DataFrame):
         "sector_ma_ratio_20d", "sector_volatility", "sector_volume_ratio",
         "is_dividend", "is_bonus_issue", "is_rights_offering",
         "is_split", "is_merger", "is_earnings",
-        "is_short_selling_banned", "is_bok", "is_fomc", "is_witching_kr", "is_witching_us",
+        "is_bok", "is_fomc", "is_witching_kr", "is_witching_us",
         "sector_id", "market_id",
         "day_of_week", "listing_days",
     ]
@@ -619,7 +524,6 @@ def save_features(df: pd.DataFrame):
         if col not in df.columns:
             df[col] = None
 
-    # NaN → None (numpy NaN 포함)
     for col in cols:
         if col in df.columns and df[col].dtype in [float, 'float64']:
             df[col] = df[col].apply(nan_to_none)
@@ -647,13 +551,12 @@ def save_features(df: pd.DataFrame):
         conn.close()
 
 
-# ============================================================
-# 메인
-# ============================================================
 def main():
-    logger.info(f"===== 장외 피처 생성 시작 ({TODAY}) =====")
+    global PREV_DATE
+    PREV_DATE = get_prev_trade_date()
+    logger.info(f"===== 장외 피처 생성 시작 ({TODAY}) / 한국 데이터 기준일: {PREV_DATE} =====")
 
-    # price_daily에 오늘 데이터 있는지 확인 (장 마감 전 실행 방지)
+    # price_daily에 오늘 데이터 있는지 확인
     conn_chk = get_conn()
     cur_chk  = conn_chk.cursor()
     cur_chk.execute("SELECT COUNT(*) FROM price_daily WHERE trade_date = %s", (TODAY,))
@@ -662,6 +565,11 @@ def main():
     conn_chk.close()
     if cnt == 0:
         logger.warning(f"오늘({TODAY}) price_daily 데이터 없음 → 장 마감 후 재실행 필요")
+        return
+
+    # 주말 가드
+    if TODAY.weekday() >= 5:
+        logger.info(f"주말({TODAY}) → 건너뜀")
         return
 
     init_table()
@@ -677,29 +585,19 @@ def main():
         logger.error("ticker_metadata 없음, 종료")
         return
 
-    # sector_id → sector_code 변환 (매핑 테이블 사용)
     df = df_event.copy()
     df["sector_code"] = df["sector_id"].map(SECTOR_ID_TO_CODE)
 
-    # 일봉 기술적
     if not df_tech.empty:
         df = df.merge(df_tech.drop(columns=["trade_date"]), on="ticker", how="left")
-
-    # 수급
     if not df_inv.empty:
         df = df.merge(df_inv.drop(columns=["trade_date"]), on="ticker", how="left")
-
-    # 기업가치
     if not df_val.empty:
         df = df.merge(df_val.drop(columns=["trade_date"]), on="ticker", how="left")
-
-    # 매크로 (전 종목 동일)
     if not df_macro.empty:
         for col in df_macro.columns:
             if col != "trade_date":
                 df[col] = df_macro.iloc[0][col]
-
-    # 섹터 (sector_code 기준 조인)
     if not df_sector.empty:
         df = df.merge(
             df_sector.drop(columns=["trade_date"]),
