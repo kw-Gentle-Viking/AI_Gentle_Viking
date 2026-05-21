@@ -348,25 +348,23 @@
 ### 4-1. `inference_pipeline.py`
 - **crontab**: `*/5 * * * 1-5` (평일 매 5분)
 - **목적**: `build_realtime_features.py` → `inference.py` 순서 보장 실행
-- **장중/장외 분기**
-  - 장중 (`09:00~15:30`): 피처 생성 후 추론
-  - 장외 (`15:30~17:30`): 피처 생성 생략, 최신 realtime_features (15:30 기준)로 추론만 실행
-  - `17:30` 이후: 실행 건너뜀 (중복 추론 방지)
+- **실행 조건**: 장중(`09:00~15:30`)에만 실행
+  - 장외에는 즉시 종료 — decoder step이 15:30봉이 되어 예측 대상(16:30)이 장 마감 후라 의미 없음
 - **subprocess**로 각 스크립트 실행 (타임아웃 240초)
 
 ---
 
 ### 4-2. `inference.py`
 - **실행 방식**: `inference_pipeline.py`에서 subprocess 호출 (crontab 직접 등록 없음)
-- **모델**: TFT (Temporal Fusion Transformer) — `pytorch_forecasting` 라이브러리
-- **모델 경로**: `TFT_MODEL_PATH` 환경변수 (기본값: `/home/user/checkpoints/tft_best.ckpt`)
+- **모델**: TFT (Temporal Fusion Transformer) — `tft-torch` (PlaytikaOSS) v0.0.6
+- **모델 경로**: `TFT_MODEL_PATH` 환경변수 (기본값: `/home/user/best_model_state_dict.pt`)
 - **대상 종목**: `REALTIME_TICKERS = ["005930", "000660"]` (하드코딩)
 
 #### 피처 로드 방식
 
 | 피처 종류 | 조회 조건 | 설명 |
 |---|---|---|
-| `inference_features` | `trade_date = TODAY` | 당일 장외 피처 1행/종목 |
+| `inference_features` | `trade_date = MAX(trade_date)` | **가장 최근 적재된 날짜** 사용 (장중에는 전일치, 16:30 이후에는 당일치 자동 전환) |
 | `realtime_features` | `trade_date >= TODAY - 5일` | encoder 60봉 확보를 위해 최근 5일치 조회 |
 
 - `realtime_features`를 5일치 조회한 뒤, **종목별 마지막 61봉(encoder 60 + decoder 1)만 사용** → 종목당 예측 샘플 정확히 1개
@@ -538,7 +536,7 @@ DB_PASSWORD=...
 | `00 08` | `collector_yf_fred.py` | 글로벌 시장 데이터 최근 10일 upsert |
 | `00 08` | `collector_dart.py` | 공시 이벤트 최근 7일 upsert |
 | `55 08` | `collector_realtime.py` | 장중 실시간 1분봉/5분봉 수집 시작 (2종목) |
-| `*/5 (09:00~17:30)` | `inference_pipeline.py` | 장중: 5분봉 피처 생성 + 추론 / 15:30~17:30: 추론만 / 17:30 이후: 실행 안 함 |
+| `*/5 (장중만 유효)` | `inference_pipeline.py` | 09:00~15:30 장중에만 실행 / 장외는 즉시 종료 |
 | `50 15` | `collector_kis.py` | 수급·PER/PBR·시총·지수 수집 (**장 마감 직전**) |
 | `00 16` | `collector_batch.py` | 전체 350종목 1분봉→5분봉, 섹터·종목 일봉 수집 |
 | `30 16` | `build_intraday_features.py` | 장외 종합 피처 생성 → `inference_features` |
@@ -650,42 +648,27 @@ df = df_rt.merge(df_inf.drop(columns=["trade_date"]), on="ticker", how="left")
 
 ### 추론 타이밍과 데이터 준비 조건
 
-| 시각 | 조건 | 추론 가능 여부 |
+| 시각 | 추론 실행 | 이유 |
 |---|---|---|
-| 09:00~15:30 (장중) | `realtime_features` 5일치 309봉 이상, `inference_features` 오늘치 있음 | ✅ 가능 |
-| 15:30~17:30 (장후) | `build_intraday_features` 실행(16:30) 후 수급 포함 최종 피처로 추론 | ✅ 가능 |
-| 17:30 이후 | `inference_pipeline.py` 자동 종료 | 실행 안 함 |
-| 다음날 09:00 이전 | `inference_features` trade_date = 오늘 없음 | ❌ 데이터 없어서 스킵 |
+| 09:00~15:30 (장중) | ✅ 5분마다 실행 | decoder step의 1시간 후가 장 마감 전 → 유효한 예측 |
+| 15:30 이후 (장외) | ❌ 실행 안 함 | decoder step = 15:30봉, 예측 대상 = 16:30 (장 마감 후) → 무의미 |
 
 ---
 
-### 현재 추론 준비 상태 점검 (2026-05-20 기준)
+### 현재 추론 준비 상태 점검 (2026-05-21 기준)
 
 | 항목 | 상태 | 내용 |
 |---|---|---|
 | `realtime_features` (5일치) | ✅ | 005930: 309봉 / 000660: 309봉 (2026-05-15~05-20) |
-| `inference_features` (오늘) | ✅ | 005930·000660 2종목 정상 적재 |
-| `inference_results` 테이블 | ⚪ 미생성 | `inference.py` 첫 실행 시 자동 CREATE |
-| `pytorch_forecasting` 패키지 | ✅ 설치완료 | v1.7.0 (kis_collector env) |
-| 모델 가중치 파일 | ❌ 없음 | `/home/user/checkpoints/tft_best.ckpt` 필요 |
+| `inference_features` (최근) | ✅ | 2026-05-20 기준, 2종목 정상 적재 |
+| `inference_results` 테이블 | ✅ 생성·데이터 있음 | 첫 실행으로 자동 생성, 2건 저장 완료 |
+| `tft-torch` 패키지 | ✅ 설치완료 | v0.0.6 (kis_collector env) |
+| 모델 가중치 파일 | ✅ 정상 동작 | `/home/user/best_model_state_dict.pt` |
 
----
-
-### 가중치 파일 수령 후 추론 실행 체크리스트
-
-```bash
-# 1. 패키지 설치 (완료)
-# pytorch-forecasting 1.7.0 설치됨
-
-# 2. 가중치 파일 배치
-mkdir -p /home/user/checkpoints
-# tft_best.ckpt → /home/user/checkpoints/tft_best.ckpt
-
-# 3. 추론 테스트 실행
-python /home/user/inference.py
-
-# 4. 결과 확인
-# inference_results 테이블에 005930·000660 행 생성 여부 확인
+**추론 실행 확인 결과 (2026-05-21 14:04)**
+```
+000660 | 2026-05-20 15:30:00 | 매수 | 매수:0.848 관망:0.055 매도:0.097
+005930 | 2026-05-20 15:30:00 | 매수 | 매수:0.864 관망:0.057 매도:0.079
 ```
 
 패키지와 가중치 파일 두 가지만 해결되면 데이터·코드 측면에서 추론은 즉시 동작 가능한 상태입니다.
