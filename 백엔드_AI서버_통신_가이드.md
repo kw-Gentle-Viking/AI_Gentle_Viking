@@ -16,7 +16,7 @@
     │  ◀──────────────────────────────────────────  │  5분 추론 결과 (push)
     │  ◀──────────────────────────────────────────  │  ONCE 추론 결과 + 가중치 (callback)
     │
-    │  Moirai Agent 호출 (보고서 생성, 수 분 소요)
+    │  Gemini API 호출 (보고서 생성, 수 분 소요)
     ▼
 [사용자 앱]
 ```
@@ -255,10 +255,10 @@ POST {callback_url}
 
 ---
 
-## 4. 비동기 보고서 처리 흐름 (ONCE + Moirai Agent)
+## 4. 비동기 보고서 처리 흐름 (ONCE + Gemini API)
 
 ```
-백엔드                          AI 서버                    Moirai Agent
+백엔드                          AI 서버                      Gemini API
   │                               │                              │
   │── POST /command (ONCE) ──────▶│                              │
   │◀─ {job_id, status: accepted} ─│                              │
@@ -268,7 +268,7 @@ POST {callback_url}
   │     {job_id, results,          │                              │
   │      interpretability}         │                              │
   │                               │                              │
-  │── Moirai Agent 호출 ──────────────────────────────────────▶ │
+  │── Gemini API 호출 ──────────────────────────────────────▶ │
   │   (추론결과 + 가중치 전달)                                     │
   │                               │                   보고서 생성 │
   │                               │                   (수 분 소요)│
