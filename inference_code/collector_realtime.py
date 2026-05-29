@@ -18,6 +18,7 @@ crontab:
 """
 
 import os
+import json
 import time
 import requests
 import pandas as pd
@@ -47,7 +48,7 @@ DB_CONFIG = {
     "password": os.environ.get("DB_PASSWORD", "your_password"),
 }
 
-REALTIME_TICKERS = ["005930", "000660"]
+TICKERS_FILE = "/home/user/active_tickers.json"
 
 MARKET_OPEN      = datetime.now().replace(hour=9,  minute=0,  second=0, microsecond=0)
 MARKET_CLOSE     = datetime.now().replace(hour=15, minute=30, second=0, microsecond=0)
@@ -56,6 +57,14 @@ MARKET_CLOSE_STR = "153000"
 
 # 15:25 봉 제외 (학습 데이터에 없음)
 EXCLUDED_MINUTES = {(15, 25)}
+
+
+def load_active_tickers() -> list:
+    try:
+        with open(TICKERS_FILE) as f:
+            return json.load(f).get("all_tickers", [])
+    except Exception:
+        return []
 
 
 def get_conn():
@@ -265,9 +274,14 @@ def main():
         logger.info("주말 → 실행 건너뜀")
         return
 
+    tickers = load_active_tickers()
+    if not tickers:
+        logger.warning("active_tickers 없음 → 수집 종료")
+        return
+
     token = get_access_token()
     token_issued_at = datetime.now()
-    logger.info(f"===== 실시간 수집 시작 | 종목: {REALTIME_TICKERS} =====")
+    logger.info(f"===== 실시간 수집 시작 | 종목: {tickers} =====")
 
     while True:
         # 토큰 23시간마다 갱신
@@ -282,7 +296,7 @@ def main():
                 time.sleep(30)
             else:
                 logger.info("장 마감 → 미완성 5분봉 정리 후 종료")
-                for ticker in REALTIME_TICKERS:
+                for ticker in tickers:
                     try:
                         flush_incomplete_5min(ticker)
                     except Exception as e:
@@ -296,7 +310,7 @@ def main():
         logger.debug(f"다음 수집까지 {sleep_sec}초 대기")
         time.sleep(sleep_sec)
 
-        for ticker in REALTIME_TICKERS:
+        for ticker in tickers:
             try:
                 # 1분봉 수집
                 candle = fetch_latest_1min(ticker, token)

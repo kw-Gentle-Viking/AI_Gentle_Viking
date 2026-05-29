@@ -366,7 +366,7 @@ GCP 백엔드  ──(HTTPS, 443 or 8443)──▶  AI 서버 공인 IP
 
 ---
 
-### 방안 B — Polling 방식 (공인 IP 없을 때)
+### 방안 B — Polling 방식 ✅ **확정**
 
 AI 서버가 백엔드의 커맨드 큐를 주기적으로 조회.
 백엔드가 AI 서버를 직접 호출하지 않음.
@@ -375,9 +375,11 @@ AI 서버가 백엔드의 커맨드 큐를 주기적으로 조회.
 [백엔드 GCP]
   POST /commands/queue  ← 커맨드(START/STOP/ONCE)를 큐에 적재
 
-[AI 서버, 로컬]
+[AI 서버, 로컬] — poll_commands.py
   매 N초마다 GET /commands/pending  → 큐에서 커맨드 꺼내서 처리
-  커맨드 처리 후 결과 POST /ai/realtime or callback_url
+  처리 완료 후 POST /commands/{id}/ack
+  추론 결과 POST {BACKEND_WEBHOOK_URL}/ai/realtime  (push)
+  ONCE 결과 POST {callback_url}                     (callback)
 ```
 
 **장점**: AI 서버 공인 IP 불필요, 방화벽 설정 없음.
@@ -385,6 +387,45 @@ AI 서버가 백엔드의 커맨드 큐를 주기적으로 조회.
 
 - START/STOP: 지연 허용 가능 (다음 5분 crontab 전에만 반영되면 충분)
 - ONCE(보고서): 지연 허용 가능 (비동기 처리이므로)
+
+#### 백엔드가 노출해야 하는 API (방안 B 전용)
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/commands/queue` | 사용자 앱 액션 → 커맨드 큐 적재 |
+| `GET`  | `/commands/pending` | AI 서버가 미처리 커맨드 조회 (인증 필요) |
+| `POST` | `/commands/{id}/ack` | AI 서버가 처리 완료 알림 |
+
+**GET /commands/pending 응답 예시**
+```json
+[
+  {
+    "id": "cmd_001",
+    "command": "START",
+    "user_id": "user_abc123",
+    "tickers": ["005930", "000660"]
+  },
+  {
+    "id": "cmd_002",
+    "command": "ONCE",
+    "user_id": "user_abc123",
+    "tickers": ["005930"],
+    "callback_url": "https://backend.example.com/ai-callback/report"
+  }
+]
+```
+
+#### AI 서버 폴링 스크립트 (poll_commands.py)
+
+```
+실행 방법 1 — 상시 루프:
+  python /home/user/poll_commands.py
+
+실행 방법 2 — crontab 단발성 (1분마다):
+  * * * * 1-5  python /home/user/poll_commands.py --once
+```
+
+환경변수: `BACKEND_WEBHOOK_URL`, `GCP_BACKEND_API_KEY`, `POLL_INTERVAL_SECONDS` (기본 30초)
 
 ---
 
@@ -400,24 +441,27 @@ ngrok http 8000
 
 ---
 
-### 권장 방향
+### 확정된 방향
 
 | 단계 | 방안 |
 |---|---|
-| 개발/테스트 | **방안 C** (ngrok) 또는 **방안 B** (polling) |
-| 운영 | **방안 A** (공인 IP) 또는 **방안 B** (polling, 지연 허용 시) |
+| 개발/테스트 | **방안 B** (polling) |
+| 운영 | **방안 B** (polling) ✅ 확정 |
+
+> 방안 A (공인 IP 직접 수신)로 전환 시: api_server.py의 `POST /command` 엔드포인트를 활성화하고 poll_commands.py를 중단.
 
 ---
 
-### 인증 방식 (방안 A 기준)
+### 인증 방식 (방안 B 기준)
 
 ```
-AI 서버 → 백엔드 GCP:
+AI 서버 → 백엔드 GCP (outbound, 두 방향 모두):
   Authorization: Bearer {GCP_BACKEND_API_KEY}
 
-백엔드 GCP → AI 서버:
-  X-API-Key: {AI_SERVER_API_KEY}
-  + IP allowlist (GCP 서버 IP만 허용)
+  - GET  /commands/pending      (폴링)
+  - POST /commands/{id}/ack     (처리 완료)
+  - POST /ai/realtime           (5분 추론 결과 push)
+  - POST {callback_url}         (ONCE 결과 callback)
 ```
 
 ---
@@ -426,7 +470,7 @@ AI 서버 → 백엔드 GCP:
 
 | 항목 | 내용 |
 |---|---|
-| AI 서버 공인 IP 여부 | 방안 A vs B 결정에 필요 |
-| 백엔드 GCP webhook URL | AI가 결과를 push할 엔드포인트 |
-| Polling 주기 (방안 B) | N초 결정 필요 (권장: 10~30초) |
+| 백엔드 GCP webhook URL | AI가 결과를 push할 베이스 URL (`BACKEND_WEBHOOK_URL`) |
+| Polling 주기 | `POLL_INTERVAL_SECONDS` 환경변수로 설정 (권장: 30초) |
 | 인증 키 관리 방식 | 환경변수 vs GCP Secret Manager |
+| 백엔드 커맨드 큐 구현 | `/commands/pending`, `/commands/{id}/ack` 엔드포인트 구현 필요 |

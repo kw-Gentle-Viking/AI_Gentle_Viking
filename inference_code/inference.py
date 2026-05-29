@@ -50,7 +50,7 @@ DB_CONFIG = {
 }
 
 MODEL_PATH    = os.environ.get("TFT_MODEL_PATH", "/home/user/best_model_state_dict.pt")
-REALTIME_TICKERS = ["005930", "000660"]
+TICKERS_FILE  = "/home/user/active_tickers.json"
 
 TODAY          = date.today()
 NOW            = datetime.now()
@@ -135,6 +135,14 @@ def get_conn():
     return psycopg2.connect(**DB_CONFIG)
 
 
+def load_active_tickers() -> list:
+    try:
+        with open(TICKERS_FILE) as f:
+            return json.load(f).get("all_tickers", [])
+    except Exception:
+        return []
+
+
 # ============================================================
 # 1. 테이블 초기화
 # ============================================================
@@ -165,16 +173,21 @@ def init_table():
 # 2. 피처 로드
 # ============================================================
 def load_features() -> pd.DataFrame:
+    tickers = load_active_tickers()
+    if not tickers:
+        logger.warning("active_tickers 없음 → 추론 건너뜀")
+        return pd.DataFrame()
+
     conn = get_conn()
     cur  = conn.cursor()
-    placeholders = ','.join(['%s'] * len(REALTIME_TICKERS))
+    placeholders = ','.join(['%s'] * len(tickers))
 
     # 장외 피처 — 가장 최근 적재된 날짜 사용
     # (장중에는 오늘치 미생성 → 어제치 사용, 16:30 이후에는 오늘치 사용)
     cur.execute(f"""
         SELECT MAX(trade_date) FROM inference_features
         WHERE ticker IN ({placeholders})
-    """, REALTIME_TICKERS)
+    """, tickers)
     inf_date = cur.fetchone()[0]
 
     if inf_date is None:
@@ -189,7 +202,7 @@ def load_features() -> pd.DataFrame:
         SELECT ticker, {', '.join(INFERENCE_COLS)}
         FROM inference_features
         WHERE trade_date = %s AND ticker IN ({placeholders})
-    """, [inf_date] + REALTIME_TICKERS)
+    """, [inf_date] + tickers)
     inf_rows = cur.fetchall()
 
     if not inf_rows:
@@ -206,7 +219,7 @@ def load_features() -> pd.DataFrame:
         FROM realtime_features
         WHERE trade_date >= %s AND ticker IN ({placeholders})
         ORDER BY ticker, trade_datetime
-    """, [LOOKBACK_DATE] + REALTIME_TICKERS)
+    """, [LOOKBACK_DATE] + tickers)
     rt_rows = cur.fetchall()
 
     cur.close()
@@ -368,7 +381,7 @@ def main():
         logger.info(f"주말({TODAY}) → 건너뜀")
         return
 
-    logger.info(f"===== 추론 시작 ({NOW.strftime('%H:%M')}) 대상: {REALTIME_TICKERS} =====")
+    logger.info(f"===== 추론 시작 ({NOW.strftime('%H:%M')}) 대상: {load_active_tickers()} =====")
 
     init_table()
 

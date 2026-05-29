@@ -78,6 +78,9 @@ def main():
     # 2. 추론
     run("inference.py")
 
+    # 3. 결과 백엔드 push (BACKEND_WEBHOOK_URL 미설정 시 자동 스킵)
+    run("push_realtime_results.py")
+
     logger.info("===== 완료 =====")
 
 
