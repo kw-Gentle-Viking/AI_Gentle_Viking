@@ -25,6 +25,7 @@ import pandas as pd
 import psycopg2
 from datetime import datetime, date, timedelta
 import logging
+from push_market_data import push_intraday
 
 logging.basicConfig(
     level=logging.INFO,
@@ -157,6 +158,14 @@ def save_1min(candle: dict) -> bool:
               candle["close"], candle["volume"]))
         inserted = cur.rowcount
         conn.commit()
+        if inserted == 1:
+            push_intraday([{
+                "ticker": candle["ticker"],
+                "trade_datetime": str(candle["datetime"]),
+                "open_price": candle["open"], "high_price": candle["high"],
+                "low_price": candle["low"], "close_price": candle["close"],
+                "volume": candle["volume"],
+            }], "1m")
         return inserted == 1
     except Exception as e:
         conn.rollback()
@@ -220,6 +229,13 @@ def make_and_save_5min(ticker: str, dt_start: datetime):
         if cur.rowcount == 1:
             flag = "" if n == 5 else f" ⚠️불완전({n}개)"
             logger.info(f"{ticker} 5분봉: {dt_start} / 종가 {candle_5min['close']}{flag}")
+            push_intraday([{
+                "ticker": ticker,
+                "trade_datetime": str(dt_start),
+                "open_price": candle_5min["open"], "high_price": candle_5min["high"],
+                "low_price": candle_5min["low"], "close_price": candle_5min["close"],
+                "volume": candle_5min["volume"],
+            }], "5m")
 
     except Exception as e:
         conn.rollback()

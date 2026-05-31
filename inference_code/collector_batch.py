@@ -23,6 +23,7 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, date
+from push_market_data import push_daily, push_intraday
 import logging
 
 logging.basicConfig(
@@ -322,6 +323,19 @@ def save_to_db(df_1min: pd.DataFrame, df_5min: pd.DataFrame, ticker: str):
         conn.commit()
         logger.info(f"{ticker} DB 저장 완료 - 1분봉 {len(rows_1min)}개 / 5분봉 {len(rows_5min)}개")
 
+        push_intraday([
+            {"ticker": ticker, "trade_datetime": str(r["datetime"]),
+             "open_price": r["open"], "high_price": r["high"],
+             "low_price": r["low"], "close_price": r["close"], "volume": r["volume"]}
+            for _, r in df_1min.iterrows()
+        ], "1m")
+        push_intraday([
+            {"ticker": ticker, "trade_datetime": str(r["datetime"]),
+             "open_price": r["open"], "high_price": r["high"],
+             "low_price": r["low"], "close_price": r["close"], "volume": r["volume"]}
+            for _, r in df_5min.iterrows()
+        ], "5m")
+
     except Exception as e:
         conn.rollback()
         logger.error(f"{ticker} DB 저장 실패: {e}")
@@ -501,6 +515,15 @@ def save_daily_to_db(rows: list):
         ])
         conn.commit()
         logger.info(f"일봉 DB 저장 완료: {len(rows)}개 종목")
+
+        push_daily([
+            {"ticker": r["ticker"], "trade_date": str(r["trade_date"]),
+             "open_price": r["open_price"], "high_price": r["high_price"],
+             "low_price": r["low_price"], "close_price": r["close_price"],
+             "volume": r["volume"]}
+            for r in rows
+        ])
+
     except Exception as e:
         conn.rollback()
         logger.error(f"일봉 저장 실패: {e}")
