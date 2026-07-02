@@ -61,7 +61,7 @@ def fetch_latest_results(tickers: list) -> list:
                 ticker, trade_datetime, trade_date,
                 pred_label, pred_str,
                 prob_buy, prob_hold, prob_sell,
-                model_version
+                model_version, is_halted
             FROM inference_results
             WHERE trade_date = %s
               AND ticker IN ({placeholders})
@@ -79,10 +79,11 @@ def fetch_latest_results(tickers: list) -> list:
             "trade_date":     r[2].isoformat(),
             "pred_label":     r[3],
             "pred_str":       r[4],
-            "prob_buy":       float(r[5]),
-            "prob_hold":      float(r[6]),
-            "prob_sell":      float(r[7]),
+            "prob_buy":       float(r[5]) if r[5] is not None else None,
+            "prob_hold":      float(r[6]) if r[6] is not None else None,
+            "prob_sell":      float(r[7]) if r[7] is not None else None,
             "model_version":  r[8],
+            "is_halted":      r[9],
         }
         for r in rows
     ]

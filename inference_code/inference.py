@@ -17,6 +17,7 @@ tft-torch (PlaytikaOSS) 기반 커스텀 TFT 모델 사용
 """
 
 import os
+import json
 import logging
 import psycopg2
 from psycopg2.extras import execute_values
@@ -146,6 +147,9 @@ def load_active_tickers() -> list:
 # ============================================================
 # 1. 테이블 초기화
 # ============================================================
+HALT_THRESHOLD_MIN = 15  # 장중 이 분 이상 신규 캔들 없으면 거래 정지로 판단
+
+
 def init_table():
     conn = get_conn()
     cur  = conn.cursor()
@@ -160,13 +164,83 @@ def init_table():
             prob_hold       DOUBLE PRECISION,
             prob_sell       DOUBLE PRECISION,
             model_version   VARCHAR(50),
+            is_halted       BOOLEAN NOT NULL DEFAULT FALSE,
             created_at      TIMESTAMP DEFAULT NOW(),
             PRIMARY KEY (ticker, trade_datetime)
         );
+        ALTER TABLE inference_results ADD COLUMN IF NOT EXISTS is_halted BOOLEAN NOT NULL DEFAULT FALSE;
     """)
     conn.commit()
     cur.close()
     conn.close()
+
+
+def check_halted_tickers(tickers: list) -> dict:
+    """장중에 마지막 1분봉이 HALT_THRESHOLD_MIN 이상 오래된 종목을 거래 정지로 판단"""
+    now = datetime.now()
+    market_open  = now.replace(hour=9,  minute=0,  second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    # 장외 시간에는 정지 판단 안 함
+    if not (market_open <= now <= market_close):
+        return {t: False for t in tickers}
+
+    conn = get_conn()
+    cur  = conn.cursor()
+    result = {}
+    try:
+        placeholders = ','.join(['%s'] * len(tickers))
+        cur.execute(f"""
+            SELECT ticker, MAX(datetime) as last_candle
+            FROM intraday_1min
+            WHERE ticker IN ({placeholders})
+              AND DATE(datetime) = %s
+            GROUP BY ticker
+        """, tickers + [now.date()])
+        rows = {r[0]: r[1] for r in cur.fetchall()}
+
+        for ticker in tickers:
+            last_candle = rows.get(ticker)
+            if last_candle is None:
+                result[ticker] = True  # 오늘 캔들 자체가 없음
+            else:
+                stale_min = (now - last_candle).total_seconds() / 60
+                result[ticker] = stale_min > HALT_THRESHOLD_MIN
+                if result[ticker]:
+                    logger.warning(f"{ticker} 거래 정지 의심 — 마지막 캔들 {last_candle} ({stale_min:.0f}분 전)")
+    finally:
+        cur.close()
+        conn.close()
+    return result
+
+
+def save_halted(tickers: list):
+    """거래 정지 종목 — is_halted=True로 현재 시각 기준 레코드 저장"""
+    if not tickers:
+        return
+    conn = get_conn()
+    cur  = conn.cursor()
+    try:
+        for ticker in tickers:
+            cur.execute("""
+                INSERT INTO inference_results (
+                    ticker, trade_datetime, trade_date,
+                    pred_label, pred_str,
+                    prob_buy, prob_hold, prob_sell,
+                    model_version, is_halted
+                ) VALUES (%s, %s, %s, NULL, '거래정지', NULL, NULL, NULL, NULL, TRUE)
+                ON CONFLICT (ticker, trade_datetime) DO UPDATE SET
+                    pred_str  = '거래정지',
+                    is_halted = TRUE
+            """, (ticker, NOW.replace(second=0, microsecond=0), TODAY))
+        conn.commit()
+        logger.warning(f"거래 정지 시그널 저장: {tickers}")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"거래 정지 저장 실패: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
 
 # ============================================================
@@ -337,7 +411,7 @@ def save_results(tickers: list, last_dts: list, probs: torch.Tensor):
             ticker, trade_dt, TODAY,
             pred_label, LABEL_MAP[pred_label],
             float(p[0]), float(p[1]), float(p[2]),
-            os.path.basename(MODEL_PATH),
+            os.path.basename(MODEL_PATH), False,
         ))
 
     conn = get_conn()
@@ -348,7 +422,7 @@ def save_results(tickers: list, last_dts: list, probs: torch.Tensor):
                 ticker, trade_datetime, trade_date,
                 pred_label, pred_str,
                 prob_buy, prob_hold, prob_sell,
-                model_version
+                model_version, is_halted
             ) VALUES %s
             ON CONFLICT (ticker, trade_datetime) DO UPDATE SET
                 pred_label    = EXCLUDED.pred_label,
@@ -356,7 +430,8 @@ def save_results(tickers: list, last_dts: list, probs: torch.Tensor):
                 prob_buy      = EXCLUDED.prob_buy,
                 prob_hold     = EXCLUDED.prob_hold,
                 prob_sell     = EXCLUDED.prob_sell,
-                model_version = EXCLUDED.model_version
+                model_version = EXCLUDED.model_version,
+                is_halted     = EXCLUDED.is_halted
         """, rows)
         conn.commit()
         logger.info(f"추론 결과 저장: {len(rows)}건")
@@ -381,9 +456,22 @@ def main():
         logger.info(f"주말({TODAY}) → 건너뜀")
         return
 
-    logger.info(f"===== 추론 시작 ({NOW.strftime('%H:%M')}) 대상: {load_active_tickers()} =====")
+    all_tickers = load_active_tickers()
+    logger.info(f"===== 추론 시작 ({NOW.strftime('%H:%M')}) 대상: {all_tickers} =====")
 
     init_table()
+
+    # 거래 정지 종목 분리
+    halt_map     = check_halted_tickers(all_tickers)
+    halted       = [t for t, h in halt_map.items() if h]
+    active       = [t for t, h in halt_map.items() if not h]
+
+    if halted:
+        save_halted(halted)
+
+    if not active:
+        logger.warning("정상 추론 대상 종목 없음 → 종료")
+        return
 
     model = load_model()
     if model is None:
@@ -393,6 +481,9 @@ def main():
     if df.empty:
         logger.warning("피처 없음, 종료")
         return
+
+    # 정상 종목만 추론
+    df = df[df["ticker"].isin(active)]
 
     batch, tickers, last_dts = prepare_batch(df)
     if batch is None:
